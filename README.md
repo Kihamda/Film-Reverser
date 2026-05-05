@@ -22,7 +22,7 @@ flexible crop tools.
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - `rawpy` – RAW decoding (libraw)
 - `Pillow` – image processing and display
 - `numpy` – array maths

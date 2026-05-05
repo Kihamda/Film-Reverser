@@ -569,7 +569,8 @@ class FilmReverserApp:
         dw = max(1, int(iw * scale))
         dh = max(1, int(ih * scale))
 
-        self.display_pil = self.processed_pil.resize((dw, dh), Image.LANCZOS)
+        self.display_pil = self.processed_pil.resize(
+            (dw, dh), Image.Resampling.LANCZOS)
         self.photo_image = ImageTk.PhotoImage(self.display_pil)
 
         self._canvas.delete("all")
@@ -634,9 +635,12 @@ class FilmReverserApp:
             ttk.Radiobutton(dlg, text=lbl, variable=fmt,
                             value=ext).pack(anchor=tk.W, padx=20)
         confirmed = tk.BooleanVar(value=False)
-        ttk.Button(dlg, text="OK",
-                   command=lambda: [confirmed.set(True),
-                                    dlg.destroy()]).pack(pady=6)
+
+        def _confirm_and_close():
+            confirmed.set(True)
+            dlg.destroy()
+
+        ttk.Button(dlg, text="OK", command=_confirm_and_close).pack(pady=6)
         self.root.wait_window(dlg)
         if not confirmed.get():
             return
@@ -734,15 +738,17 @@ def _invert_negative(img: np.ndarray, film_type: str) -> np.ndarray:
             img[:, -bs:].reshape(-1, 3),
         ])
         # 95th-percentile of border pixels = unexposed film base
-        base = np.percentile(border, 95, axis=0)
+        base = np.quantile(border, 0.95, axis=0)
         base = np.maximum(base, 0.01)
 
         inv = (base - img) / base
         inv = np.clip(inv, 0.0, 1.0)
 
-        # stretch each channel to fill [0, 1]
+        # stretch each channel to fill [0, 1] using a single quantile call
+        lows, highs = np.quantile(
+            inv.reshape(-1, 3), (0.02, 0.98), axis=0)
         for c in range(3):
-            lo, hi = np.percentile(inv[:, :, c], (2, 98))
+            lo, hi = lows[c], highs[c]
             if hi > lo:
                 inv[:, :, c] = (inv[:, :, c] - lo) / (hi - lo)
         return np.clip(inv, 0.0, 1.0)
@@ -752,7 +758,7 @@ def _invert_negative(img: np.ndarray, film_type: str) -> np.ndarray:
                 + 0.587 * img[:, :, 1]
                 + 0.114 * img[:, :, 2])
         inv = 1.0 - gray
-        lo, hi = np.percentile(inv, (2, 98))
+        lo, hi = np.quantile(inv, (0.02, 0.98))
         if hi > lo:
             inv = (inv - lo) / (hi - lo)
         inv = np.clip(inv, 0.0, 1.0)
@@ -828,7 +834,7 @@ def _detect_crop(img: np.ndarray):
         gray = (0.299 * img[:, :, 0]
                 + 0.587 * img[:, :, 1]
                 + 0.114 * img[:, :, 2])
-        thr = np.percentile(gray, 50)
+        thr = np.quantile(gray, 0.50)
         mask = gray > thr
         rows = np.any(mask, axis=1)
         cols = np.any(mask, axis=0)
