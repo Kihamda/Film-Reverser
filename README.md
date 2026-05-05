@@ -1,8 +1,30 @@
 # Film-Reverser
 
 A Python/Tkinter GUI application for converting **135 film negative scans**
-(colour and B&W) into positive images, with live-preview adjustments and
-flexible crop tools.
+(colour and B&W) into positive images, with live-preview adjustments,
+dust/scratch removal, and flexible crop tools.
+
+---
+
+## Quick Start (recommended – uses [uv](https://docs.astral.sh/uv/))
+
+```bash
+# Install uv once (if you don't have it)
+curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS / Linux
+# or: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+
+# Run – uv automatically creates a venv and installs all dependencies
+uv run film_reverser.py
+```
+
+No manual `pip install` needed – uv reads `pyproject.toml` and handles everything.
+
+### Alternative (plain pip)
+
+```bash
+pip install -r requirements.txt
+python film_reverser.py
+```
 
 ---
 
@@ -15,6 +37,7 @@ flexible crop tools.
 | **Negative inversion** | Orange-mask removal for colour negatives; luminance inversion for B&W |
 | **Live adjustments** | Exposure, Contrast, Shadows, Highlights, Saturation, White Balance (Temp + Tint) |
 | **Auto White Balance** | Gray-world estimation applied to the current frame |
+| **Dust & Scratches** | Slider-controlled removal of dust spots, scratches, and stray-light artefacts |
 | **Crop** | Auto-detect film borders (OpenCV or fallback); manual draw-on-canvas crop |
 | **Save** | Single image (TIFF / JPEG / PNG) or batch-save entire folder |
 
@@ -26,21 +49,13 @@ flexible crop tools.
 - `rawpy` – RAW decoding (libraw)
 - `Pillow` – image processing and display
 - `numpy` – array maths
-- `opencv-python-headless` *(optional)* – better auto-crop / detection
+- `opencv-python-headless` – better dust removal (inpainting) and auto-crop
 
-Install all at once:
-
-```bash
-pip install -r requirements.txt
-```
+All dependencies are listed in `pyproject.toml` and `requirements.txt`.
 
 ---
 
 ## Usage
-
-```bash
-python film_reverser.py
-```
 
 ### Workflow
 
@@ -54,10 +69,15 @@ python film_reverser.py
    - *Exposure* (EV stops), *Contrast*, *Shadows*, *Highlights*
    - *Temperature / Tint* (white balance), *Saturation*
    - Hit **⚖ Auto WB** for an automatic gray-world balance.
-5. **Crop** – click **✂ Auto Crop** to detect frame borders automatically,
+5. **Dust & Scratches** – raise the *Strength* slider to automatically detect
+   and fill dust spots, scratches, and stray-light artefacts.
+   - At low strength (~10–30): only obvious bright/dark outliers are removed.
+   - At high strength (~60–100): finer artefacts are also corrected.
+   - Uses OpenCV inpainting when available; falls back to a PIL median filter.
+6. **Crop** – click **✂ Auto Crop** to detect frame borders automatically,
    or **✏ Manual Crop** to draw a rectangle directly on the preview canvas.
    **↺ Reset Crop** removes any crop.
-6. **Save** – **💾 Save Image…** saves the current frame;
+7. **Save** – **💾 Save Image…** saves the current frame;
    **💾 Save All…** batch-processes every file in the list using the
    current settings (choose TIFF, JPEG, or PNG output format).
 

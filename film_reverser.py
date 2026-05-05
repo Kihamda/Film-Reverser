@@ -3,17 +3,20 @@
 Film Reverser
 =============
 A GUI application for converting 135 film negative scans (color and B&W)
-to positive images, with live-preview adjustments and crop functionality.
+to positive images, with live-preview adjustments, dust/scratch removal,
+and crop functionality.
 
 Requirements: rawpy, Pillow, numpy, opencv-python-headless (optional)
-Usage:  python film_reverser.py
+Usage:
+    uv run film_reverser.py          # recommended – auto-installs deps
+    python film_reverser.py          # if deps are already installed
 """
 
 import os
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from PIL import Image, ImageTk
+from PIL import Image, ImageFilter, ImageTk
 import rawpy
 
 try:
@@ -74,14 +77,15 @@ class FilmReverserApp:
 
         # adjustment parameters
         self.params = {
-            "film_type":  tk.StringVar(value="color"),
-            "exposure":   tk.DoubleVar(value=0.0),
-            "contrast":   tk.DoubleVar(value=1.0),
-            "shadows":    tk.DoubleVar(value=0.0),
-            "highlights": tk.DoubleVar(value=0.0),
-            "saturation": tk.DoubleVar(value=1.0),
-            "wb_temp":    tk.DoubleVar(value=0.0),
-            "wb_tint":    tk.DoubleVar(value=0.0),
+            "film_type":    tk.StringVar(value="color"),
+            "exposure":     tk.DoubleVar(value=0.0),
+            "contrast":     tk.DoubleVar(value=1.0),
+            "shadows":      tk.DoubleVar(value=0.0),
+            "highlights":   tk.DoubleVar(value=0.0),
+            "saturation":   tk.DoubleVar(value=1.0),
+            "wb_temp":      tk.DoubleVar(value=0.0),
+            "wb_tint":      tk.DoubleVar(value=0.0),
+            "dust_strength": tk.DoubleVar(value=0.0),
         }
         self._debounce_id = None
 
@@ -240,6 +244,13 @@ class FilmReverserApp:
         cf.pack(fill=tk.X, **p)
         self._add_slider(cf, "Saturation", "saturation", 0.0, 2.0, 0.05)
 
+        # Dust & Scratches
+        df = ttk.LabelFrame(inner, text="Dust & Scratches")
+        df.pack(fill=tk.X, **p)
+        ttk.Label(df, text="Strength  0 = off", foreground="gray",
+                  font=("TkDefaultFont", 8)).pack(anchor=tk.W, padx=6)
+        self._add_slider(df, "Strength", "dust_strength", 0.0, 100.0, 1.0)
+
         # Crop
         kf = ttk.LabelFrame(inner, text="Crop")
         kf.pack(fill=tk.X, **p)
@@ -375,6 +386,9 @@ class FilmReverserApp:
         ft = self.params["film_type"].get()
 
         img = _invert_negative(img, ft)
+        dust = self.params["dust_strength"].get() / 100.0
+        if dust > 0.0:
+            img = _remove_dust(img, dust)
         img = _apply_wb(img,
                         self.params["wb_temp"].get() / 100.0,
                         self.params["wb_tint"].get() / 100.0)
@@ -697,6 +711,7 @@ class FilmReverserApp:
         self.params["saturation"].set(1.0)
         self.params["wb_temp"].set(0.0)
         self.params["wb_tint"].set(0.0)
+        self.params["dust_strength"].set(0.0)
         self.crop_rect = None
         self._reprocess()
         self._set_status("All adjustments reset.")
@@ -812,6 +827,78 @@ def _apply_saturation(img: np.ndarray,
             + 0.114 * img[:, :, 2:3])
     gray = np.repeat(gray, 3, axis=2)
     return gray + sat * (img - gray)
+
+
+def _remove_dust(img: np.ndarray, strength: float) -> np.ndarray:
+    """Remove dust spots, scratches and stray-light artefacts.
+
+    Works on the *positive* image (after inversion): dust on film appears as
+    bright or dark outlier spots relative to the local neighbourhood.
+
+    strength: 0.0 = off, 1.0 = maximum (maps to slider 0-100 / 100).
+
+    Strategy
+    --------
+    1. Compute a local median image (robust background estimate).
+    2. Build a mask of pixels whose deviation from the median exceeds a
+       threshold that shrinks with *strength* (more aggressive detection at
+       higher strength).
+    3. Fill masked pixels via inpainting (OpenCV) or median replacement
+       (PIL fallback).
+    """
+    if strength < 0.01:
+        return img
+
+    img8 = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+
+    # Deviation threshold (in 0-255 units) below which a pixel is considered
+    # clean.  At minimum strength (~0.01) the threshold is ~60 (only obvious
+    # bright/dark outliers flagged); at full strength (1.0) it drops to ~8
+    # (catches fine grain and faint artefacts too).
+    # Formula: threshold = max(MIN_THR, MAX_THR * (1 - strength * SCALE))
+    _DUST_MIN_THR   = 6    # absolute floor so we never over-detect on noise
+    _DUST_MAX_THR   = 60   # threshold at the lowest usable strength
+    _DUST_SCALE     = 0.87 # how fast the threshold decreases with strength
+    threshold = int(max(_DUST_MIN_THR,
+                        _DUST_MAX_THR * (1.0 - strength * _DUST_SCALE)))
+
+    if HAS_CV2:
+        gray = cv2.cvtColor(img8, cv2.COLOR_RGB2GRAY)
+
+        # Local median background (large kernel handles coarse dust)
+        median = cv2.medianBlur(gray, 7)
+        diff = gray.astype(np.int16) - median.astype(np.int16)
+
+        # Mask: bright dust spots AND dark scratches
+        mask = (np.abs(diff) > threshold).astype(np.uint8) * 255
+
+        # Dilate slightly so the inpainting has context around each spot
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask = cv2.dilate(mask, kernel, iterations=1)
+
+        # Inpainting radius scales with strength
+        inpaint_r = max(2, int(2 + strength * 4))
+        result = cv2.inpaint(img8, mask, inpaintRadius=inpaint_r,
+                             flags=cv2.INPAINT_TELEA)
+        return result.astype(np.float32) / 255.0
+
+    else:
+        # PIL fallback: per-channel median replacement for outlier pixels
+        pil = Image.fromarray(img8, "RGB")
+        # ImageFilter.MedianFilter(size=k) uses an odd k×k kernel; here
+        # k = 2*radius+1 so the kernel grows from 3×3 to 7×7 with strength.
+        radius = max(1, int(1 + strength * 2))
+        pil_median = pil.filter(ImageFilter.MedianFilter(size=radius * 2 + 1))
+
+        orig_arr = np.array(pil, dtype=np.int16)
+        med_arr  = np.array(pil_median, dtype=np.int16)
+        diff     = np.abs(orig_arr - med_arr)
+
+        # Replace outlier pixels with the median value
+        dust_mask = diff.max(axis=2) > threshold
+        result = orig_arr.copy()
+        result[dust_mask] = med_arr[dust_mask]
+        return result.astype(np.float32) / 255.0
 
 
 def _detect_crop(img: np.ndarray):
